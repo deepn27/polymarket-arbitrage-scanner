@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Polymarket Arbitrage Scanner</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="header-left">
+                <h1>Polymarket Arbitrage Scanner</h1>
+            </div>
+            <div class="header-right">
+                <span class="status-indicator" id="connectionStatus">
+                    <span class="status-dot"></span>
+                    <span class="status-text">Connecting...</span>
+                </span>
+                <span class="last-scan" id="lastScan">Last scan: Never</span>
+            </div>
+        </header>
+
+        <div class="control-panel">
+            <button id="startBtn" class="btn btn-success">Start Scanner</button>
+            <button id="stopBtn" class="btn btn-danger" disabled>Stop Scanner</button>
+            <button id="scanBtn" class="btn btn-primary">Scan Now</button>
+        </div>
+
+        <div class="summary-cards">
+            <div class="card">
+                <div class="card-label">Active Opportunities</div>
+                <div class="card-value" id="activeCount">0</div>
+            </div>
+            <div class="card">
+                <div class="card-label">Total Profit Potential</div>
+                <div class="card-value" id="totalProfit">$0.00</div>
+            </div>
+            <div class="card">
+                <div class="card-label">Markets Scanned</div>
+                <div class="card-value" id="marketsScanned">0</div>
+            </div>
+            <div class="card">
+                <div class="card-label">Best Opportunity</div>
+                <div class="card-value" id="bestOpportunity">0%</div>
+            </div>
+        </div>
+
+        <div class="filters-section">
+            <div class="filter-group">
+                <label for="minProfit">Minimum Profit %</label>
+                <input type="number" id="minProfit" value="0.5" step="0.1" min="0">
+            </div>
+            <div class="filter-group">
+                <label for="sortBy">Sort By</label>
+                <select id="sortBy">
+                    <option value="profit">Highest Profit</option>
+                    <option value="liquidity">Highest Liquidity</option>
+                    <option value="recent">Most Recent</option>
+                </select>
+            </div>
+            <button id="applyFilters" class="btn btn-secondary">Apply Filters</button>
+        </div>
+
+        <div class="table-container">
+            <table id="opportunitiesTable">
+                <thead>
+                    <tr>
+                        <th>Market</th>
+                        <th>Type</th>
+                        <th>Cost</th>
+                        <th>Payout</th>
+                        <th>Net Profit</th>
+                        <th>Profit %</th>
+                        <th>Liquidity</th>
+                        <th>Detected</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="opportunitiesBody">
+                    <tr class="no-data">
+                        <td colspan="9">No opportunities found. Start the scanner to detect arbitrage.</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div id="modal" class="modal">
+        <div class="modal-content">
+            <span class="modal-close" id="modalClose">&times;</span>
+            <h2 id="modalTitle">Opportunity Details</h2>
+            <div class="modal-body">
+                <div class="detail-section">
+                    <h3>Market Information</h3>
+                    <p><strong>Question:</strong> <span id="modalQuestion"></span></p>
+                    <p><strong>Event:</strong> <span id="modalEvent"></span></p>
+                    <p><strong>Type:</strong> <span id="modalType"></span></p>
+                </div>
+                <div class="detail-section">
+                    <h3>Profit Analysis</h3>
+                    <div class="profit-grid">
+                        <div><strong>Total Cost:</strong> <span id="modalCost"></span></div>
+                        <div><strong>Payout:</strong> <span id="modalPayout"></span></div>
+                        <div><strong>Gross Profit:</strong> <span id="modalGross"></span></div>
+                        <div><strong>Fees:</strong> <span id="modalFees"></span></div>
+                        <div><strong>Net Profit:</strong> <span id="modalNet"></span></div>
+                        <div><strong>Net %:</strong> <span id="modalPercent"></span></div>
+                    </div>
+                </div>
+                <div class="detail-section">
+                    <h3>Trade Execution Plan</h3>
+                    <div id="tradeLegs" class="trade-legs"></div>
+                </div>
+                <div class="modal-actions">
+                    <a id="polymarketLink" href="#" target="_blank" class="btn btn-primary">View on Polymarket</a>
+                    <button id="copyPlan" class="btn btn-secondary">Copy Trade Plan</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/dashboard.js"></script>
+</body>
+</html>
