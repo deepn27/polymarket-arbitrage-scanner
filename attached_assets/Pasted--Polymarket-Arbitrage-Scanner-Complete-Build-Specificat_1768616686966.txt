@@ -1,0 +1,788 @@
+# Polymarket Arbitrage Scanner - Complete Build Specification for Replit
+
+## IMPORTANT INSTRUCTIONS FOR REPLIT AI
+
+You are building a **production-ready Polymarket Arbitrage Scanner**. This document contains the complete specification. Follow it precisely. Do NOT simplify or skip any components. If you encounter any issues, ask me before substituting with a simpler solution.
+
+---
+
+## 1. PROJECT OVERVIEW
+
+### 1.1 What We're Building
+
+A real-time monitoring system that:
+1. Continuously fetches all active markets from Polymarket's APIs
+2. Analyzes each market for pricing inefficiencies (arbitrage opportunities)
+3. Calculates exact profit potential after fees
+4. Displays opportunities in a real-time dashboard
+5. Stores historical data for analysis
+6. Sends alerts when high-value opportunities appear
+
+### 1.2 Core Business Logic
+
+**The Arbitrage Principle:**
+In prediction markets, all mutually exclusive outcomes must sum to 100% probability (or $1.00 in price terms). When they don't, risk-free profit exists.
+
+**Example 1 - Binary Market:**
+- Market: "Will BTC hit $100k by March?"
+- YES price: $0.45
+- NO price: $0.52
+- Total: $0.97
+- **Arbitrage:** Buy both for $0.97, guaranteed $1.00 payout = $0.03 profit (3.09% return)
+
+**Example 2 - Multi-Outcome Market:**
+- Market: "Who wins the election?" (Only 1 can win)
+- Candidate A: $0.35
+- Candidate B: $0.32
+- Candidate C: $0.30
+- Total: $0.97
+- **Arbitrage:** Buy all three for $0.97, one MUST win = $1.00 payout = $0.03 profit
+
+**Fee Consideration:**
+- Polymarket charges ~2% on winning positions
+- An opportunity is only "real" if profit > fees
+- Net Profit = Gross Profit - (Payout × 0.02)
+
+---
+
+## 2. TECHNICAL REQUIREMENTS
+
+### 2.1 Technology Stack
+
+```
+Language: Python 3.11+
+Web Framework: FastAPI
+Async HTTP Client: httpx
+Database: SQLite with aiosqlite (async)
+Real-time Updates: WebSockets
+Frontend: Vanilla HTML/CSS/JavaScript (no framework)
+Background Tasks: APScheduler or asyncio tasks
+```
+
+### 2.2 Required Python Packages
+
+Create `requirements.txt` with:
+```
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+httpx==0.26.0
+websockets==12.0
+aiosqlite==0.19.0
+python-dotenv==1.0.0
+apscheduler==3.10.4
+pydantic==2.5.3
+jinja2==3.1.3
+python-multipart==0.0.6
+```
+
+### 2.3 Polymarket API Endpoints (These are real, use them exactly)
+
+| Purpose | URL | Method |
+|---------|-----|--------|
+| List all events | `https://gamma-api.polymarket.com/events` | GET |
+| List all markets | `https://gamma-api.polymarket.com/markets` | GET |
+| Get token prices | `https://clob.polymarket.com/prices` | GET |
+| Get order book | `https://clob.polymarket.com/book` | GET |
+
+**Important API Details:**
+- No authentication required for read-only access
+- Rate limit: ~100 requests/minute (be respectful)
+- Gamma API returns market metadata
+- CLOB API returns live prices and order books
+- All prices are in USDC (1 USDC = $1)
+
+---
+
+## 3. DETAILED ARCHITECTURE
+
+### 3.1 Directory Structure
+
+Create this exact structure:
+```
+polymarket-arbitrage-scanner/
+├── main.py                      # FastAPI app entry point
+├── config.py                    # All configuration/settings
+├── requirements.txt             # Python dependencies
+├── .env.example                 # Template for environment variables
+│
+├── core/                        # Core business logic
+│   ├── __init__.py
+│   ├── scanner.py               # Main scanning orchestration
+│   ├── market_fetcher.py        # Polymarket API client
+│   ├── arbitrage_detector.py    # Arbitrage calculation algorithms
+│   └── price_analyzer.py        # Price sum calculations
+│
+├── models/                      # Data models
+│   ├── __init__.py
+│   ├── market.py                # Market/Token Pydantic models
+│   ├── opportunity.py           # Arbitrage opportunity models
+│   └── database.py              # SQLite database operations
+│
+├── api/                         # API layer
+│   ├── __init__.py
+│   ├── routes.py                # REST API endpoints
+│   └── websocket_manager.py     # WebSocket handling
+│
+├── services/                    # External services
+│   ├── __init__.py
+│   └── notifications.py         # Discord/Telegram alerts
+│
+├── static/                      # Frontend assets
+│   ├── css/
+│   │   └── style.css
+│   └── js/
+│       └── dashboard.js
+│
+└── templates/                   # HTML templates
+    └── dashboard.html
+```
+
+### 3.2 Data Flow
+
+```
+[Polymarket Gamma API] 
+        ↓
+[Market Fetcher] - Fetches all active markets every N seconds
+        ↓
+[Price Fetcher] - Gets current prices for all tokens from CLOB API
+        ↓
+[Arbitrage Detector] - Calculates price sums, identifies opportunities
+        ↓
+[Database] - Stores opportunities with timestamps
+        ↓
+[WebSocket] - Broadcasts to connected dashboard clients
+        ↓
+[Dashboard UI] - Displays real-time opportunities
+```
+
+---
+
+## 4. COMPONENT SPECIFICATIONS
+
+### 4.1 Config Module (`config.py`)
+
+**Purpose:** Centralize all configuration with environment variable support
+
+**Required Settings:**
+- `GAMMA_API_URL`: "https://gamma-api.polymarket.com"
+- `CLOB_API_URL`: "https://clob.polymarket.com"
+- `SCAN_INTERVAL_SECONDS`: How often to scan (default: 10)
+- `MIN_ARBITRAGE_PERCENT`: Minimum profit % to report (default: 0.5)
+- `MIN_LIQUIDITY_USD`: Minimum market liquidity to consider (default: 100)
+- `DATABASE_PATH`: SQLite database file path
+- `DISCORD_WEBHOOK_URL`: Optional, for alerts
+- `POLYMARKET_FEE_PERCENT`: 0.02 (2% fee on winnings)
+
+**Implementation Notes:**
+- Use pydantic's BaseSettings for type safety
+- Load from .env file using python-dotenv
+- Provide sensible defaults for all optional settings
+
+---
+
+### 4.2 Market Fetcher (`core/market_fetcher.py`)
+
+**Purpose:** Interface with Polymarket's APIs to get market data
+
+**Required Functions:**
+
+#### `async def fetch_all_events() -> List[dict]`
+- Call `GET https://gamma-api.polymarket.com/events`
+- Parameters: `closed=false`, `archived=false`, `limit=100`, `offset=0`
+- Paginate through all results (keep fetching until empty response)
+- Return list of raw event dictionaries
+- Handle rate limiting with 100ms delay between requests
+
+#### `async def fetch_all_markets() -> List[dict]`
+- Call `GET https://gamma-api.polymarket.com/markets`
+- Parameters: `closed=false`, `archived=false`, `limit=100`, `offset=0`
+- Paginate through all results
+- Return list of raw market dictionaries
+
+#### `async def fetch_prices(token_ids: List[str]) -> dict`
+- Call `GET https://clob.polymarket.com/prices`
+- Parameter: `token_ids` (comma-separated)
+- Batch in chunks of 100 tokens
+- Return dict mapping token_id to price info
+
+#### `async def fetch_orderbook(token_id: str) -> dict`
+- Call `GET https://clob.polymarket.com/book`
+- Parameter: `token_id`
+- Return orderbook with bids and asks
+
+**Error Handling:**
+- Retry failed requests up to 3 times with exponential backoff
+- Log all errors with full context
+- Return empty results on persistent failure (don't crash)
+
+**Response Structure from Gamma API (markets endpoint):**
+```json
+{
+  "id": "...",
+  "question": "Will X happen?",
+  "conditionId": "0x...",
+  "slug": "will-x-happen",
+  "tokens": [
+    {
+      "token_id": "12345",
+      "outcome": "Yes",
+      "price": "0.65"
+    },
+    {
+      "token_id": "12346",
+      "outcome": "No",
+      "price": "0.35"
+    }
+  ],
+  "volume24hr": 50000,
+  "liquidity": 25000,
+  "closed": false
+}
+```
+
+---
+
+### 4.3 Arbitrage Detector (`core/arbitrage_detector.py`)
+
+**Purpose:** Analyze markets and detect arbitrage opportunities
+
+**Required Functions:**
+
+#### `def calculate_price_sum(tokens: List[Token]) -> float`
+- Sum all token prices in a market
+- Use ask prices if available (what you'd actually pay)
+- Return the total
+
+#### `def detect_arbitrage(market: Market) -> Optional[Opportunity]`
+- Calculate price sum for all outcomes
+- If sum < 1.0: Arbitrage exists (buy all outcomes)
+- Calculate:
+  - `total_cost` = sum of all prices
+  - `guaranteed_payout` = 1.0 (one outcome always wins)
+  - `gross_profit` = payout - cost
+  - `gross_profit_percent` = (gross_profit / cost) × 100
+  - `estimated_fees` = payout × 0.02
+  - `net_profit` = gross_profit - fees
+  - `net_profit_percent` = (net_profit / cost) × 100
+- Only return opportunity if `net_profit_percent` >= `MIN_ARBITRAGE_PERCENT`
+- Return None if no profitable arbitrage
+
+#### `def generate_trade_legs(market: Market) -> List[TradeLeg]`
+- For each token in the market, create a trade leg
+- Each leg specifies: token_id, outcome name, side (BUY), price, suggested size
+
+**Arbitrage Types to Detect:**
+
+1. **BINARY_MISPRICING**: YES + NO ≠ $1.00 in binary markets
+2. **DUTCH_BOOK_UNDER**: Sum of all outcomes < $1.00 in multi-outcome markets
+3. **MULTI_MARKET_INCONSISTENCY**: Same event priced differently across related markets
+
+---
+
+### 4.4 Scanner (`core/scanner.py`)
+
+**Purpose:** Orchestrate the scanning process
+
+**Required Class: `ArbitrageScanner`**
+
+**State Variables:**
+- `is_running: bool` - Whether continuous scanning is active
+- `last_scan_at: datetime` - Timestamp of last completed scan
+- `active_opportunities: Dict[str, Opportunity]` - Currently valid opportunities
+- `scan_count: int` - Total scans completed
+- `markets_scanned: int` - Markets analyzed in last scan
+
+**Required Methods:**
+
+#### `async def run_single_scan() -> List[Opportunity]`
+1. Log scan start to database
+2. Fetch all active markets from Gamma API
+3. Extract all token IDs from markets
+4. Batch fetch current prices from CLOB API
+5. For each market:
+   - Skip if liquidity < MIN_LIQUIDITY_USD
+   - Parse into Market model
+   - Run arbitrage detection
+   - If opportunity found, add to results
+6. Update active_opportunities (add new, remove expired)
+7. Save new opportunities to database
+8. Log scan completion with stats
+9. Return list of opportunities found
+
+#### `async def start_continuous_scanning()`
+- Set is_running = True
+- Loop while is_running:
+  - Call run_single_scan()
+  - Wait SCAN_INTERVAL_SECONDS
+  - Handle exceptions without crashing
+
+#### `def stop()`
+- Set is_running = False
+
+#### `def get_status() -> dict`
+- Return current scanner state for API
+
+---
+
+### 4.5 Database Models (`models/database.py`)
+
+**Purpose:** Async SQLite operations for persistence
+
+**Required Tables:**
+
+#### `opportunities`
+```sql
+CREATE TABLE opportunities (
+    id TEXT PRIMARY KEY,
+    detected_at TIMESTAMP NOT NULL,
+    arbitrage_type TEXT NOT NULL,
+    event_title TEXT,
+    market_question TEXT,
+    markets_involved TEXT,  -- JSON array of condition IDs
+    total_cost REAL NOT NULL,
+    guaranteed_payout REAL NOT NULL,
+    gross_profit REAL NOT NULL,
+    gross_profit_percent REAL NOT NULL,
+    estimated_fees REAL NOT NULL,
+    net_profit REAL NOT NULL,
+    net_profit_percent REAL NOT NULL,
+    trade_legs TEXT,  -- JSON array
+    min_liquidity REAL,
+    is_active INTEGER DEFAULT 1,
+    last_seen_at TIMESTAMP,
+    times_detected INTEGER DEFAULT 1,
+    expired_at TIMESTAMP
+);
+```
+
+#### `scans`
+```sql
+CREATE TABLE scans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TIMESTAMP NOT NULL,
+    completed_at TIMESTAMP,
+    markets_scanned INTEGER,
+    opportunities_found INTEGER,
+    duration_ms INTEGER,
+    status TEXT DEFAULT 'running',
+    error_message TEXT
+);
+```
+
+#### `market_snapshots` (for historical analysis)
+```sql
+CREATE TABLE market_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id INTEGER,
+    condition_id TEXT NOT NULL,
+    question TEXT,
+    price_sum REAL NOT NULL,
+    token_prices TEXT,  -- JSON
+    volume_24h REAL,
+    liquidity REAL,
+    snapshot_at TIMESTAMP NOT NULL
+);
+```
+
+**Required Functions:**
+- `async def init_database()` - Create tables if not exist
+- `async def save_opportunity(opp: dict) -> str` - Insert/update opportunity
+- `async def get_active_opportunities(limit: int) -> List[dict]`
+- `async def mark_opportunity_inactive(opp_id: str)`
+- `async def log_scan_start() -> int` - Returns scan_id
+- `async def log_scan_complete(scan_id, stats)`
+- `async def get_scan_history(limit: int) -> List[dict]`
+
+---
+
+### 4.6 API Routes (`api/routes.py`)
+
+**Purpose:** REST API for dashboard and external access
+
+**Required Endpoints:**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/` | Health check, returns status |
+| GET | `/api/status` | Scanner status (running, last_scan, counts) |
+| POST | `/api/start` | Start continuous scanning |
+| POST | `/api/stop` | Stop scanning |
+| POST | `/api/scan` | Trigger single scan |
+| GET | `/api/opportunities` | List active opportunities |
+| GET | `/api/opportunities/{id}` | Get specific opportunity details |
+| GET | `/api/summary` | Aggregate stats and charts data |
+| GET | `/api/history` | Historical scan data |
+
+**Query Parameters for `/api/opportunities`:**
+- `min_profit`: Filter by minimum profit percent
+- `sort`: "profit", "liquidity", "recent"
+- `limit`: Max results (default 100)
+
+---
+
+### 4.7 WebSocket Manager (`api/websocket_manager.py`)
+
+**Purpose:** Real-time updates to connected clients
+
+**Required Class: `ConnectionManager`**
+
+**Methods:**
+- `async def connect(websocket)` - Accept and track connection
+- `def disconnect(websocket)` - Remove from tracking
+- `async def broadcast(message: dict)` - Send to all clients
+- `async def send_personal(websocket, message)` - Send to specific client
+
+**Message Types to Broadcast:**
+```json
+{"type": "new_opportunity", "data": {...}}
+{"type": "opportunity_expired", "opportunity_id": "..."}
+{"type": "scan_complete", "data": {"markets": 1500, "opportunities": 3}}
+{"type": "status_update", "data": {...}}
+```
+
+**WebSocket Endpoint:** `ws://host/ws`
+
+---
+
+### 4.8 Dashboard UI (`templates/dashboard.html`, `static/`)
+
+**Purpose:** Visual interface for monitoring
+
+**Required UI Components:**
+
+1. **Header**
+   - App title: "Polymarket Arbitrage Scanner"
+   - Connection status indicator (green dot = connected, red = disconnected)
+   - Last scan timestamp display
+
+2. **Control Panel**
+   - Start Scanner button (green, calls POST /api/start)
+   - Stop Scanner button (red, calls POST /api/stop)
+   - Scan Now button (blue, calls POST /api/scan)
+   - Visual feedback when buttons are clicked
+
+3. **Summary Cards** (4 cards in a row)
+   - Card 1: "Active Opportunities" - count of current opportunities
+   - Card 2: "Total Profit Potential" - sum of all net profits in USD
+   - Card 3: "Markets Scanned" - number from last scan
+   - Card 4: "Best Opportunity" - highest profit % currently available
+
+4. **Filters Section**
+   - Input field: "Minimum Profit %" (number input, default 0.5)
+   - Dropdown: "Sort By" with options: Highest Profit, Highest Liquidity, Most Recent
+   - Apply Filters button
+
+5. **Opportunities Table**
+   - Column headers: Market | Type | Cost | Payout | Net Profit | Profit % | Liquidity | Detected | Actions
+   - Each row is clickable to show detail modal
+   - Profit % column should be color-coded (green for >2%, yellow for 1-2%, white for <1%)
+   - "View" button in Actions column
+   - Show "No opportunities found" message when table is empty
+   - Auto-update when WebSocket receives new data
+
+6. **Detail Modal** (appears when clicking a row or View button)
+   - Full market question text
+   - Event title if available
+   - Arbitrage type explanation
+   - Trade execution plan:
+     - List each leg: "BUY [Outcome] at $[Price]"
+     - Total cost
+     - Expected payout
+     - Net profit after fees
+   - Direct link to Polymarket: `https://polymarket.com/event/[slug]`
+   - "Copy Trade Plan" button
+   - Close button
+
+**JavaScript Functionality (`static/js/dashboard.js`):**
+
+1. **On Page Load:**
+   - Establish WebSocket connection to `ws://[host]/ws`
+   - Fetch current opportunities from `GET /api/opportunities`
+   - Fetch scanner status from `GET /api/status`
+   - Populate dashboard with data
+
+2. **WebSocket Handling:**
+   - On connect: Update status indicator to green
+   - On disconnect: Update status indicator to red, attempt reconnect every 5 seconds
+   - On message type "new_opportunity": Add row to table, update summary cards
+   - On message type "opportunity_expired": Remove row from table
+   - On message type "scan_complete": Update "Markets Scanned" card, refresh data
+   - On message type "status_update": Update status display
+
+3. **Button Handlers:**
+   - Start button: POST to /api/start, disable button while running
+   - Stop button: POST to /api/stop, enable start button
+   - Scan Now button: POST to /api/scan, show loading state
+
+4. **Table Interactions:**
+   - Row click or View button: Open detail modal with opportunity data
+   - Sorting: Re-sort table based on dropdown selection
+   - Filtering: Filter table rows based on min profit input
+
+5. **Modal Functions:**
+   - Open modal: Populate with opportunity details
+   - Close modal: Click X, click outside, or press Escape
+   - Copy button: Copy formatted trade plan to clipboard
+
+**CSS Styling (`static/css/style.css`):**
+
+- Dark theme color scheme:
+  - Background: #0f172a (dark blue)
+  - Surface/Cards: #1e293b (slightly lighter)
+  - Primary accent: #6366f1 (indigo)
+  - Success/Profit: #22c55e (green)
+  - Warning: #f59e0b (amber)
+  - Danger/Loss: #ef4444 (red)
+  - Text primary: #f8fafc (near white)
+  - Text secondary: #94a3b8 (gray)
+
+- Component styles:
+  - Cards with subtle borders and shadows
+  - Rounded corners (8-12px)
+  - Hover states on interactive elements
+  - Responsive grid that stacks on mobile
+  - Table with alternating row colors
+  - Modal with backdrop blur
+
+---
+
+### 4.9 Main Entry Point (`main.py`)
+
+**Purpose:** Initialize and run the application
+
+**Required Setup:**
+
+1. Create FastAPI app with metadata:
+   - title: "Polymarket Arbitrage Scanner"
+   - description: "Real-time arbitrage detection for Polymarket"
+   - version: "1.0.0"
+
+2. Lifespan handler (startup/shutdown):
+   - Startup: Call `init_database()`
+   - Shutdown: Call `scanner.stop()`
+
+3. Mount static files:
+   - Path: "/static"
+   - Directory: "static"
+
+4. Setup Jinja2 templates:
+   - Directory: "templates"
+
+5. Include routers:
+   - API router at prefix "/api"
+
+6. WebSocket endpoint:
+   - Path: "/ws"
+   - Handler from websocket_manager
+
+7. Root route ("/"):
+   - Serve dashboard.html template
+
+8. Run configuration:
+   - Host: "0.0.0.0"
+   - Port: 8080
+   - Reload: Based on DEBUG setting
+
+---
+
+## 5. IMPORTANT IMPLEMENTATION NOTES
+
+### 5.1 Async Pattern
+- All I/O operations must be async (database, HTTP, WebSocket)
+- Use `httpx.AsyncClient` with context manager for HTTP
+- Use `aiosqlite` for all database operations
+- FastAPI handles async endpoint functions natively
+
+### 5.2 Error Handling Strategy
+- Wrap all API calls in try/except
+- Log errors with full traceback
+- Never let errors crash the scanner loop
+- Return meaningful error messages to API clients
+- Implement exponential backoff for retries
+
+### 5.3 Rate Limiting Implementation
+- Add 100ms (`asyncio.sleep(0.1)`) between Polymarket API calls
+- If you receive HTTP 429, wait 60 seconds before retry
+- Track request count per minute in memory
+
+### 5.4 Data Validation
+- Use Pydantic models with proper type hints
+- Handle missing fields with Optional and defaults
+- Validate numeric values are in expected ranges
+- Log warnings for unexpected data shapes
+
+### 5.5 Logging Configuration
+- Use Python's `logging` module
+- Format: `'%(asctime)s - %(name)s - %(levelname)s - %(message)s'`
+- Level: INFO for production, DEBUG when needed
+- Log: scan starts, scan completions, opportunities found, errors
+
+### 5.6 Thread Safety
+- Scanner runs in background task, API serves requests
+- Use thread-safe data structures or proper locks if needed
+- SQLite handles concurrent reads well with WAL mode
+
+---
+
+## 6. TESTING CHECKLIST
+
+After building, verify each item works:
+
+### API Tests
+- [ ] `GET /api/` returns `{"status": "ok"}`
+- [ ] `GET /api/status` returns scanner state
+- [ ] `POST /api/start` starts the scanner (check status changes)
+- [ ] `POST /api/stop` stops the scanner
+- [ ] `POST /api/scan` triggers one scan
+- [ ] `GET /api/opportunities` returns array (may be empty)
+- [ ] `GET /api/summary` returns aggregated data
+
+### Scanner Tests
+- [ ] Scanner successfully fetches markets from Polymarket
+- [ ] Scanner calculates price sums correctly
+- [ ] Scanner detects when sum < 1.0
+- [ ] Opportunities are saved to database
+- [ ] Scanner continues running after API errors
+
+### UI Tests
+- [ ] Dashboard loads at root URL
+- [ ] WebSocket connects (green indicator)
+- [ ] Start/Stop buttons work
+- [ ] Table populates with opportunities
+- [ ] Clicking row opens modal
+- [ ] Modal shows trade details
+- [ ] Filters affect displayed data
+
+### Database Tests
+- [ ] Tables are created on startup
+- [ ] Opportunities persist after restart
+- [ ] Scan history is recorded
+- [ ] Queries return expected data
+
+---
+
+## 7. EXECUTION ORDER
+
+Build components in this sequence:
+
+**Phase 1: Foundation**
+1. Create directory structure
+2. Create requirements.txt
+3. Create config.py with all settings
+4. Create empty __init__.py files
+
+**Phase 2: Data Layer**
+5. Create models/market.py (Pydantic models for Market, Token)
+6. Create models/opportunity.py (Pydantic models for Opportunity, TradeLeg)
+7. Create models/database.py (SQLite setup and CRUD functions)
+
+**Phase 3: Core Logic**
+8. Create core/market_fetcher.py (Polymarket API client)
+9. Create core/arbitrage_detector.py (detection algorithms)
+10. Create core/scanner.py (orchestration class)
+
+**Phase 4: API Layer**
+11. Create api/websocket_manager.py (WebSocket handling)
+12. Create api/routes.py (REST endpoints)
+
+**Phase 5: Frontend**
+13. Create templates/dashboard.html (full HTML structure)
+14. Create static/css/style.css (complete styling)
+15. Create static/js/dashboard.js (all interactivity)
+
+**Phase 6: Integration**
+16. Create main.py (wire everything together)
+17. Create .env.example (document all env vars)
+
+**Phase 7: Testing**
+18. Test each API endpoint
+19. Test scanner functionality
+20. Test UI interactions
+21. Fix any issues found
+
+---
+
+## 8. EXPECTED BEHAVIOR WHEN COMPLETE
+
+### Normal Operation Flow:
+1. User opens the app URL
+2. Dashboard loads, WebSocket connects (green dot)
+3. User clicks "Start Scanner"
+4. Every 10 seconds, scanner:
+   - Fetches ~2000-5000 markets from Polymarket
+   - Analyzes each for arbitrage
+   - Updates database with findings
+   - Broadcasts updates via WebSocket
+5. Dashboard table updates in real-time
+6. User sees opportunities with profit calculations
+7. User can click any opportunity to see trade details
+8. Scanner runs continuously until stopped
+
+### When Arbitrage Exists:
+- Row appears in table with green profit percentage
+- Summary cards update with new totals
+- Modal shows exact trade execution plan
+- User can copy the plan or click through to Polymarket
+
+### When No Arbitrage:
+- Table shows "No opportunities found" message
+- This is normal - efficient markets rarely have arbitrage
+- Scanner continues monitoring for when opportunities appear
+
+---
+
+## 9. PROHIBITED ACTIONS
+
+Do NOT do any of these:
+
+- ❌ Skip creating any file in the directory structure
+- ❌ Use synchronous code where async is specified
+- ❌ Simplify the UI to just text/console output
+- ❌ Skip WebSocket implementation and use polling instead
+- ❌ Hardcode API URLs instead of using config
+- ❌ Skip error handling with bare try/except pass
+- ❌ Use a different database than SQLite
+- ❌ Use React/Vue/Angular for the frontend
+- ❌ Skip the detail modal functionality
+- ❌ Skip any API endpoint
+- ❌ Remove the dashboard styling
+
+---
+
+## 10. WHEN TO ASK ME
+
+Stop and ask me if:
+
+1. Polymarket API returns unexpected data format
+2. You're unsure how to handle a specific edge case
+3. A library doesn't work as expected
+4. You want to deviate from this specification
+5. You encounter rate limiting issues
+6. Database operations are failing
+7. WebSocket connections aren't working
+
+**Do NOT substitute with a simpler solution without my approval.**
+
+---
+
+## 11. SUCCESS CRITERIA
+
+The project is complete when ALL of these are true:
+
+- [ ] All files from directory structure exist
+- [ ] `pip install -r requirements.txt` succeeds
+- [ ] App starts without errors on port 8080
+- [ ] Dashboard loads in browser
+- [ ] WebSocket connects successfully
+- [ ] Start Scanner button begins scanning
+- [ ] Status shows markets being scanned
+- [ ] Opportunities table works (even if empty)
+- [ ] Modal opens with opportunity details
+- [ ] Database persists data across restarts
+- [ ] Stop Scanner button stops scanning
+- [ ] No console errors in browser
+- [ ] No unhandled exceptions in server logs
+
+---
+
+**NOW BEGIN BUILDING. Start with Phase 1, Step 1: Create the directory structure.**
